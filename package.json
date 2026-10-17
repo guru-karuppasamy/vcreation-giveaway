@@ -1,9 +1,9 @@
 {
-  "engines": {
-  "node": "22.x"
-}
   "name": "vcreation-giveaway",
   "version": "1.0.0",
+  "engines": {
+  "node": "22.x"
+  }
   "private": true,
   "description": "V Creation Diwali Giveaway website and OTP backend",
   "main": "server.js",
