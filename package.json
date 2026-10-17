@@ -1,4 +1,7 @@
 {
+  "engines": {
+  "node": "22.x"
+}
   "name": "vcreation-giveaway",
   "version": "1.0.0",
   "private": true,
