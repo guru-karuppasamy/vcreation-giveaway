@@ -71,40 +71,33 @@ async function loadConfig() {
     $("whatsappLink").href = appConfig.whatsappUrl;
   } catch (_) {}
 }
-$("phoneNumber").addEventListener("input", e => e.target.value = e.target.value.replace(/\D/g,"").slice(0,10));
-$("phoneForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const phone = $("phoneNumber").value.trim();
-  if (!/^[6-9]\d{9}$/.test(phone)) return toast("Enter a valid 10-digit Indian mobile number.");
-  currentPhone = "+91" + phone;
-  const button = e.submitter; button.disabled = true; button.textContent = "Sending OTP...";
-  try {
-    const result = await api("/api/auth/send-otp", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({phone:currentPhone}) });
-    $("phoneForm").classList.add("d-none"); $("otpForm").classList.remove("d-none"); $("otpCode").focus();
-    toast(result.message || "OTP sent by SMS.");
-  } catch (err) { toast(err.message); }
-  finally { button.disabled = false; button.textContent = "Send OTP →"; }
-});
-$("otpForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const code = $("otpCode").value.trim();
-  if (!/^\d{4,10}$/.test(code)) return toast("Enter the OTP you received by SMS.");
-  const button = e.submitter; button.disabled = true; button.textContent = "Verifying...";
-  try {
-    const result = await api("/api/auth/verify-otp", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({phone:currentPhone, code}) });
-    authToken = result.token; localStorage.setItem("vc_token", authToken);
-    showApp(); await refreshSnapshot(); toast("Mobile number verified.");
-  } catch (err) { toast(err.message); }
-  finally { button.disabled = false; button.textContent = "Verify & Continue"; }
-});
-$("resendOtp").addEventListener("click", async () => {
-  try {
-    const result = await api("/api/auth/send-otp", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({phone:currentPhone}) });
-    toast(result.message || "A new OTP was sent.");
-  } catch (err) { toast(err.message); }
-});
-$("backToPhone").addEventListener("click", () => {
-  $("otpForm").classList.add("d-none"); $("phoneForm").classList.remove("d-none"); $("otpCode").value = "";
+let authMode = "login";
+function setAuthMode(mode) {
+ authMode=mode; const registering=mode==="register";
+ $("showLoginTab").classList.toggle("active",!registering); $("showRegisterTab").classList.toggle("active",registering);
+ $("showLoginTab").setAttribute("aria-selected",String(!registering)); $("showRegisterTab").setAttribute("aria-selected",String(registering));
+ $("nameField").classList.toggle("d-none",!registering); $("confirmPasswordField").classList.toggle("d-none",!registering);
+ $("fullName").required=registering; $("confirmPassword").required=registering;
+ $("accountPassword").autocomplete=registering?"new-password":"current-password";
+ $("authSubmit").textContent=registering?"Create account →":"Log in →";
+}
+$("showLoginTab").addEventListener("click",()=>setAuthMode("login"));
+$("showRegisterTab").addEventListener("click",()=>setAuthMode("register"));
+$("phoneNumber").addEventListener("input",e=>e.target.value=e.target.value.replace(/\D/g,"").slice(0,10));
+$("authForm").addEventListener("submit",async e=>{
+ e.preventDefault(); const phone=$("phoneNumber").value.trim(), password=$("accountPassword").value, name=$("fullName").value.trim();
+ if(!/^[6-9]\d{9}$/.test(phone)) return toast("Enter a valid 10-digit Indian mobile number.");
+ if(password.length<8) return toast("Use a password with at least 8 characters.");
+ if(authMode==="register"&&name.length<2) return toast("Enter your full name.");
+ if(authMode==="register"&&password!==$("confirmPassword").value) return toast("Passwords do not match.");
+ const button=$("authSubmit"); button.disabled=true; button.textContent=authMode==="register"?"Creating account...":"Logging in...";
+ try {
+  const endpoint=authMode==="register"?"/api/auth/register":"/api/auth/login";
+  const payload=authMode==="register"?{phone:"+91"+phone,password,name}:{phone:"+91"+phone,password};
+  const result=await api(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  authToken=result.token; localStorage.setItem("vc_token",authToken); currentPhone=result.user?.phone||"+91"+phone;
+  showApp(); await refreshSnapshot(); toast(authMode==="register"?"Account created successfully.":"Welcome back!");
+ } catch(err){toast(err.message)} finally{button.disabled=false;setAuthMode(authMode)}
 });
 $("logoutBtn").addEventListener("click", () => {
   authToken = ""; localStorage.removeItem("vc_token"); currentPhone = ""; showLogin(); toast("You have logged out.");
