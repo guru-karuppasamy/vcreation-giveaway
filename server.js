@@ -38,6 +38,8 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phone TEXT NOT NULL UNIQUE,
+  name TEXT,
+  password_hash TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS task_submissions (
@@ -76,6 +78,11 @@ CREATE TABLE IF NOT EXISTS admin_audit (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
+
+// Migrate existing OTP-era databases without deleting submissions.
+const userColumns = db.prepare("PRAGMA table_info(users)").all().map(column => column.name);
+if (!userColumns.includes("name")) db.exec("ALTER TABLE users ADD COLUMN name TEXT");
+if (!userColumns.includes("password_hash")) db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
 
 const minPurchase = Number(process.env.MINIMUM_PURCHASE || 1000);
 const campaign = {
@@ -177,37 +184,33 @@ app.get("/api/config", (req, res) => {
   res.json({ whatsappUrl: campaign.whatsappUrl, instagramUrl: campaign.instagramUrl, minimumPurchase: campaign.minimumPurchase });
 });
 
-// Request real SMS OTP through Twilio Verify. No OTP is generated or returned by this server.
-app.post("/api/auth/send-otp", otpLimiter, async (req, res) => {
-  const phone = normalizeIndianPhone(req.body.phone);
-  if (!phone) return res.status(400).json({ error: "Enter a valid mobile number including country code if needed." });
-  const verify = twilioVerifyClient();
-  if (!verify) return res.status(503).json({ error: "SMS OTP is not configured yet. Add Twilio Verify credentials to .env and restart the server." });
-  try {
-    const result = await verify.client.verify.v2.services(verify.serviceSid).verifications.create({ to: phone, channel: "sms" });
-    return res.json({ ok: true, status: result.status, message: "OTP sent by SMS if the number can receive messages." });
-  } catch (err) {
-    console.error("Twilio send OTP error:", err.message);
-    return res.status(502).json({ error: "Could not send OTP. Check the number and SMS provider configuration." });
-  }
+// Password-based customer authentication. Legacy OTP accounts remain in the database.
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: "Too many login attempts. Please try again later." } });
+app.post("/api/auth/register", authLimiter, async (req, res) => {
+ const phone=normalizeIndianPhone(req.body.phone), name=String(req.body.name||"").trim(), password=String(req.body.password||"");
+ if(!phone) return res.status(400).json({error:"Enter a valid mobile number."});
+ if(name.length<2||name.length>80) return res.status(400).json({error:"Enter your full name (2–80 characters)."});
+ if(password.length<8||password.length>72) return res.status(400).json({error:"Password must be between 8 and 72 characters."});
+ if(db.prepare("SELECT id FROM users WHERE phone=?").get(phone)) return res.status(409).json({error:"An account already exists for this number. Please log in or contact support if you previously used OTP."});
+ try {
+  const hash=await bcrypt.hash(password,12);
+  const result=db.prepare("INSERT INTO users(phone,name,password_hash) VALUES (?,?,?)").run(phone,name,hash);
+  const user=db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
+  const token=signToken({sub:String(user.id),role:"user",phone:user.phone});
+  return res.status(201).json({ok:true,token,user:{id:user.id,phone:user.phone,name:user.name},snapshot:customerSnapshot(user.id)});
+ } catch(err) {
+  if(String(err.code||"").includes("SQLITE_CONSTRAINT")) return res.status(409).json({error:"An account already exists for this number."});
+  console.error("Registration error:",err.message); return res.status(500).json({error:"Could not create your account. Please try again."});
+ }
 });
-
-app.post("/api/auth/verify-otp", otpLimiter, async (req, res) => {
-  const phone = normalizeIndianPhone(req.body.phone);
-  const code = String(req.body.code || "").trim();
-  if (!phone || !/^\d{4,10}$/.test(code)) return res.status(400).json({ error: "Enter a valid phone number and OTP." });
-  const verify = twilioVerifyClient();
-  if (!verify) return res.status(503).json({ error: "SMS OTP is not configured yet. Add Twilio Verify credentials to .env and restart the server." });
-  try {
-    const result = await verify.client.verify.v2.services(verify.serviceSid).verificationChecks.create({ to: phone, code });
-    if (result.status !== "approved") return res.status(401).json({ error: "Incorrect or expired OTP. Please request a new code." });
-    const user = getUser(phone);
-    const token = signToken({ sub: String(user.id), role: "user", phone: user.phone });
-    return res.json({ ok: true, token, user: { id: user.id, phone: user.phone }, snapshot: customerSnapshot(user.id) });
-  } catch (err) {
-    console.error("Twilio verify OTP error:", err.message);
-    return res.status(401).json({ error: "Incorrect or expired OTP. Please request a new code." });
-  }
+app.post("/api/auth/login", authLimiter, async (req,res)=>{
+ const phone=normalizeIndianPhone(req.body.phone), password=String(req.body.password||"");
+ if(!phone||!password||password.length>72) return res.status(400).json({error:"Enter a valid mobile number and password."});
+ const user=db.prepare("SELECT * FROM users WHERE phone=?").get(phone);
+ if(!user||!user.password_hash) return res.status(401).json({error:"Invalid mobile number or password. If you used the old OTP login, contact support to migrate your account."});
+ if(!(await bcrypt.compare(password,user.password_hash))) return res.status(401).json({error:"Invalid mobile number or password."});
+ const token=signToken({sub:String(user.id),role:"user",phone:user.phone});
+ return res.json({ok:true,token,user:{id:user.id,phone:user.phone,name:user.name},snapshot:customerSnapshot(user.id)});
 });
 
 app.get("/api/me", requireAuth, (req, res) => res.json(customerSnapshot(Number(req.auth.sub))));
