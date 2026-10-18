@@ -207,7 +207,7 @@ app.post("/api/auth/login", authLimiter, async (req,res)=>{
  const phone=normalizeIndianPhone(req.body.phone), password=String(req.body.password||"");
  if(!phone||!password||password.length>72) return res.status(400).json({error:"Enter a valid mobile number and password."});
  const user=db.prepare("SELECT * FROM users WHERE phone=?").get(phone);
- if(!user||!user.password_hash) return res.status(401).json({error:"Invalid mobile number or password. If you used the old OTP login, contact support to migrate your account."});
+ if(!user||!user.password_hash) return res.status(401).json({error:"Invalid mobile number or password. Check your details and try again, or create an account."});
  if(!(await bcrypt.compare(password,user.password_hash))) return res.status(401).json({error:"Invalid mobile number or password."});
  const token=signToken({sub:String(user.id),role:"user",phone:user.phone});
  return res.json({ok:true,token,user:{id:user.id,phone:user.phone,name:user.name},snapshot:customerSnapshot(user.id)});
